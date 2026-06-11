@@ -28,6 +28,19 @@
             {{ satText }}
           </span>
         </div>
+
+        <!-- 喘振主警报灯 (爆闪) -->
+        <div
+          class="alarm-big"
+          :class="{
+            'alarm-critical': telem.surgeStatus === 'critical',
+            'alarm-warn': telem.surgeStatus === 'warn',
+            'alarm-vbv-on': telem.vbvActive
+          }"
+        >
+          <div class="alarm-icon" />
+          <span>{{ alarmText }}</span>
+        </div>
       </div>
     </header>
 
@@ -54,6 +67,72 @@
               <span class="info-value mono" :class="errClass">
                 {{ telem.n1Error >= 0 ? '+' : '' }}{{ telem.n1Error.toFixed(2) }}%
               </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 喘振主动防护面板 -->
+        <div class="panel-card surge-card" :class="{ 'panel-critical': telem.surgeStatus === 'critical' }">
+          <h3 class="card-title">🌪️ 压气机喘振防护</h3>
+
+          <div class="surge-margin-wrap">
+            <div class="surge-margin-bar">
+              <div
+                class="surge-fill"
+                :class="surgeFillClass"
+                :style="{ height: Math.min(100, telem.surgeMargin / 30 * 100) + '%' }"
+              />
+              <div class="surge-mark mark-warn" style="bottom: 40%" title="警告线 12%"></div>
+              <div class="surge-mark mark-crit" style="bottom: 16.6%" title="危险线 5%"></div>
+            </div>
+            <div class="surge-margin-info">
+              <div class="margin-big mono" :class="surgeTextClass">
+                {{ telem.surgeMargin?.toFixed?.(1) ?? '--' }}
+              </div>
+              <div class="margin-label">喘振裕度 %</div>
+              <div class="margin-status" :class="statusClass">
+                {{ statusText }}
+              </div>
+            </div>
+          </div>
+
+          <div class="vbv-vsv-row">
+            <div class="vbv-indicator" :class="{ active: telem.vbvActive }">
+              <div class="vbv-light" />
+              <div class="vbv-text">
+                <div class="vbv-title">VBV 放气活门</div>
+                <div class="vbv-value mono">{{ telem.vbvActive ? 'OPEN' : 'CLOSED' }}</div>
+                <div class="vbv-detail mono">{{ (telem.vbvPosition * 100).toFixed(0) }}%</div>
+              </div>
+            </div>
+            <div class="vsv-indicator" :class="{ active: telem.vsvAngle > 0.5 }">
+              <div class="vsv-light" />
+              <div class="vsv-text">
+                <div class="vsv-title">VSV 静子叶片</div>
+                <div class="vsv-value mono">{{ telem.vsvAngle > 0.5 ? 'ACT' : 'NOM' }}</div>
+                <div class="vsv-detail mono">{{ telem.vsvAngle?.toFixed?.(1) ?? '0' }}°</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="shake-info">
+            <div class="shake-row">
+              <span class="shake-label">抖振强度</span>
+              <div class="shake-bar-track">
+                <div
+                  class="shake-bar-fill"
+                  :style="{ width: Math.min(100, telem.shakeNorm * 3) + '%' }"
+                />
+              </div>
+              <span class="shake-val mono">{{ telem.shakeNorm?.toFixed?.(1) ?? '0' }}</span>
+            </div>
+            <div class="shake-row">
+              <span class="shake-label">dPs3/dt</span>
+              <span class="shake-val mono">{{ telem.dPs3dt?.toFixed?.(1) ?? '0' }} psia/s</span>
+            </div>
+            <div class="shake-row">
+              <span class="shake-label">dN2/dt</span>
+              <span class="shake-val mono">{{ telem.dN2dt?.toFixed?.(1) ?? '0' }} %/s</span>
             </div>
           </div>
         </div>
@@ -237,6 +316,40 @@ const errClass = computed(() => {
   if (e > 2) return 'err-bad'
   if (e > 0.5) return 'err-warn'
   return 'err-ok'
+})
+
+// ---- 喘振防护计算属性 ----
+const alarmText = computed(() => {
+  if (telem.surgeStatus === 'critical') return 'SURGE CRITICAL'
+  if (telem.surgeStatus === 'warn') return 'SURGE WARNING'
+  if (telem.vbvActive) return 'VBV ACTIVE'
+  return 'MARGIN OK'
+})
+
+const surgeFillClass = computed(() => {
+  if (telem.surgeStatus === 'critical') return 'fill-critical'
+  if (telem.surgeStatus === 'warn') return 'fill-warn'
+  return 'fill-safe'
+})
+
+const surgeTextClass = computed(() => {
+  if (telem.surgeStatus === 'critical') return 'text-critical'
+  if (telem.surgeStatus === 'warn') return 'text-warn'
+  return 'text-safe'
+})
+
+const statusClass = computed(() => {
+  if (telem.surgeStatus === 'critical') return 'stat-critical'
+  if (telem.surgeStatus === 'warn') return 'stat-warn'
+  return 'stat-safe'
+})
+
+const statusText = computed(() => {
+  switch (telem.surgeStatus) {
+    case 'critical': return '危险逼近喘振'
+    case 'warn':     return '警告裕度低'
+    default:         return '安全裕度充足'
+  }
 })
 </script>
 
@@ -551,5 +664,290 @@ const errClass = computed(() => {
   font-size: 10px;
   color: #5a6480;
   letter-spacing: 1px;
+}
+
+/* ===== 顶部大警报灯 ===== */
+.alarm-big {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: rgba(20, 28, 50, 0.6);
+  border: 1px solid #2a3658;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #6a7694;
+  transition: all 80ms linear;
+}
+.alarm-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3a4560;
+  box-shadow: 0 0 4px rgba(0,0,0,0.5);
+}
+
+/* 警告状态 (黄色慢闪) */
+.alarm-big.alarm-warn {
+  color: #ffc444;
+  border-color: #ffc444;
+  background: rgba(255, 196, 68, 0.12);
+}
+.alarm-big.alarm-warn .alarm-icon {
+  background: #ffc444;
+  box-shadow: 0 0 12px #ffc444;
+  animation: blink-warn 1.2s ease-in-out infinite;
+}
+@keyframes blink-warn {
+  0%, 100% { opacity: 1; box-shadow: 0 0 12px #ffc444; }
+  50%      { opacity: 0.4; box-shadow: 0 0 4px #ffc444; }
+}
+
+/* 危险状态 (红色爆闪 - 极快频率) */
+.alarm-big.alarm-critical {
+  color: #ff5566;
+  border-color: #ff5566;
+  background: rgba(255, 85, 102, 0.18);
+  animation: flash-critical-bg 0.25s ease-in-out infinite;
+}
+.alarm-big.alarm-critical .alarm-icon {
+  background: #ff5566;
+  box-shadow: 0 0 20px #ff5566, 0 0 40px #ff5566;
+  animation: flash-critical 0.2s ease-in-out infinite;
+}
+@keyframes flash-critical {
+  0%, 100% { opacity: 1; transform: scale(1.2); box-shadow: 0 0 24px #ff5566, 0 0 48px #ff5566; }
+  50%      { opacity: 0.3; transform: scale(0.8); box-shadow: 0 0 4px #ff5566; }
+}
+@keyframes flash-critical-bg {
+  0%, 100% { background: rgba(255, 85, 102, 0.25); }
+  50%      { background: rgba(255, 85, 102, 0.05); }
+}
+
+/* VBV 激活状态 (青色) */
+.alarm-big.alarm-vbv-on:not(.alarm-warn):not(.alarm-critical) {
+  color: #59e9ff;
+  border-color: #59e9ff;
+  background: rgba(89, 233, 255, 0.1);
+}
+.alarm-big.alarm-vbv-on:not(.alarm-warn):not(.alarm-critical) .alarm-icon {
+  background: #59e9ff;
+  box-shadow: 0 0 10px #59e9ff;
+  animation: pulse-cyan 0.8s ease-in-out infinite;
+}
+@keyframes pulse-cyan {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.6; }
+}
+
+/* ===== 喘振防护面板 ===== */
+.surge-card {
+  margin-top: 0;
+  transition: all 100ms linear;
+}
+.surge-card.panel-critical {
+  border-color: #ff5566;
+  box-shadow: 0 0 24px rgba(255, 85, 102, 0.4), inset 0 0 20px rgba(255, 85, 102, 0.1);
+  animation: panel-critical-pulse 0.4s ease-in-out infinite;
+}
+@keyframes panel-critical-pulse {
+  0%, 100% { box-shadow: 0 0 24px rgba(255, 85, 102, 0.4), inset 0 0 20px rgba(255, 85, 102, 0.1); }
+  50%      { box-shadow: 0 0 48px rgba(255, 85, 102, 0.7), inset 0 0 30px rgba(255, 85, 102, 0.2); }
+}
+
+.surge-margin-wrap {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+.surge-margin-bar {
+  position: relative;
+  width: 32px;
+  height: 130px;
+  background: linear-gradient(180deg, #0a0f1c, #151c30);
+  border: 1px solid #263152;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.surge-fill {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  transition: height 40ms linear;
+  border-radius: 3px 3px 0 0;
+}
+.surge-fill.fill-safe {
+  background: linear-gradient(180deg, #7fffd8 0%, #22cc88 100%);
+  box-shadow: 0 0 12px rgba(127, 255, 216, 0.5);
+}
+.surge-fill.fill-warn {
+  background: linear-gradient(180deg, #ffdd66 0%, #ff9933 100%);
+  box-shadow: 0 0 14px rgba(255, 200, 80, 0.6);
+}
+.surge-fill.fill-critical {
+  background: linear-gradient(180deg, #ff7788 0%, #dd3344 100%);
+  box-shadow: 0 0 18px rgba(255, 70, 90, 0.8);
+  animation: surge-fill-flash 0.25s ease-in-out infinite;
+}
+@keyframes surge-fill-flash {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.surge-mark {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  z-index: 2;
+}
+.surge-mark.mark-warn { background: #ffc444; box-shadow: 0 0 4px #ffc444; }
+.surge-mark.mark-crit { background: #ff5566; box-shadow: 0 0 6px #ff5566; }
+
+.surge-margin-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+.margin-big {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+}
+.margin-big.text-safe { color: #7fffd8; text-shadow: 0 0 10px rgba(127,255,216,0.4); }
+.margin-big.text-warn { color: #ffc444; text-shadow: 0 0 10px rgba(255,196,68,0.5); }
+.margin-big.text-critical {
+  color: #ff5566;
+  text-shadow: 0 0 16px rgba(255,85,102,0.8);
+  animation: text-critical-flash 0.2s ease-in-out infinite;
+}
+@keyframes text-critical-flash {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.margin-label {
+  font-size: 10px;
+  color: #6a7694;
+  letter-spacing: 0.8px;
+}
+.margin-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.margin-status.stat-safe { color: #7fffa0; }
+.margin-status.stat-warn { color: #ffc444; }
+.margin-status.stat-critical { color: #ff5566; }
+
+/* VBV/VSV 指示灯 */
+.vbv-vsv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.vbv-indicator, .vsv-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(12, 18, 32, 0.8);
+  border: 1px solid #263152;
+  border-radius: 6px;
+  transition: all 80ms linear;
+}
+.vbv-light, .vsv-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3a4560;
+  flex-shrink: 0;
+}
+
+.vbv-indicator.active {
+  border-color: #59e9ff;
+  background: rgba(89, 233, 255, 0.1);
+}
+.vbv-indicator.active .vbv-light {
+  background: #59e9ff;
+  box-shadow: 0 0 12px #59e9ff;
+  animation: blink-vbv 0.6s ease-in-out infinite;
+}
+@keyframes blink-vbv {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+.vsv-indicator.active {
+  border-color: #a888ff;
+  background: rgba(168, 136, 255, 0.1);
+}
+.vsv-indicator.active .vsv-light {
+  background: #a888ff;
+  box-shadow: 0 0 12px #a888ff;
+  animation: blink-vsv 0.8s ease-in-out infinite;
+}
+@keyframes blink-vsv {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
+.vbv-title, .vsv-title {
+  font-size: 10px;
+  color: #8892ac;
+  letter-spacing: 0.5px;
+}
+.vbv-value, .vsv-value {
+  font-size: 12px;
+  font-weight: 800;
+  color: #c0c8dc;
+}
+.vbv-detail, .vsv-detail {
+  font-size: 10px;
+  color: #6a7694;
+}
+.vbv-indicator.active .vbv-value { color: #59e9ff; }
+.vsv-indicator.active .vsv-value { color: #a888ff; }
+
+/* 抖振信息 */
+.shake-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed #263152;
+}
+.shake-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+.shake-label {
+  color: #6a7694;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  width: 60px;
+}
+.shake-bar-track {
+  flex: 1;
+  height: 6px;
+  background: linear-gradient(180deg, #0c1020, #161d32);
+  border: 1px solid #263152;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.shake-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #59e9ff, #a888ff, #ff5566);
+  transition: width 20ms linear;
+}
+.shake-val {
+  color: #a0aac4;
+  font-size: 10px;
+  width: 60px;
+  text-align: right;
 }
 </style>

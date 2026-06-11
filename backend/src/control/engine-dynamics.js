@@ -25,7 +25,17 @@ const ENGINE = {
   // EGT 附加动态 (燃烧室延迟 + 涡轮热惯性)
   tau_egt_chamber: 0.08,   // 燃烧传输延迟
   tau_egt_thermal: 0.65,   // 金属热惯性
-  egt_overshoot_ratio: 1.18
+  egt_overshoot_ratio: 1.18,
+
+  // VBV/VSV 作动器动态
+  tau_VBV: 0.045,          // VBV 作动器时间常数 (45ms)
+  tau_VSV: 0.060,          // VSV 作动器时间常数 (60ms)
+  vbv_ps3_drop_max: 0.18,  // VBV 全开时 Ps3 最大降低 18%
+  vsv_surge_boost: 0.15,   // VSV 全开时喘振裕度提升 15%
+
+  // 喘振先兆抖动参数
+  shake_freq: 12.5,        // 典型先兆抖动主频 Hz
+  shake_max_amp: 0.012     // 最大抖动幅度 (Ps3 百分比)
 }
 
 function polyEval(coef, x) {
@@ -57,11 +67,31 @@ export class EngineDynamics {
     this.Wf_actual = 0.0
     this.Wf_cmd_prev = 0.0
     this.tau_FMV = 0.025   // FMV 响应 25ms
+
+    // --- VBV/VSV 作动器状态 ---
+    this.VBV_cmd = 0.0        // 指令开度 (0~1)
+    this.VBV_actual = 0.0     // 实际开度 (一阶滞后)
+    this.VSV_cmd = 0.0        // 指令角度 (度)
+    this.VSV_actual = 0.0     // 实际角度
+
+    // --- 喘振先兆抖动振荡器 (用于物理仿真) ---
+    this._shakePhase = 0
+    this._shakeNoise = 0
   }
 
   setIntakeConditions(P2, T2) {
     this.P2 = P2
     this.T2 = T2
+  }
+
+  // 设置 VBV 指令 (0~1, 1=全开)
+  setVBV(position) {
+    this.VBV_cmd = Math.max(0, Math.min(1, position))
+  }
+
+  // 设置 VSV 指令角度 (0~12°, 12°=最大开角)
+  setVSV(angleDeg) {
+    this.VSV_cmd = Math.max(0, Math.min(15, angleDeg))
   }
 
   // ---- 非线性稳态工作点映射 ----
@@ -76,9 +106,21 @@ export class EngineDynamics {
     }
   }
 
-  // ---- 单步积分 (RK4) ----
-  step(Wf_cmd) {
+  // ---- 单步积分 ----
+  step(Wf_cmd, surgeProximity = 0) {
     const Ts = this.Ts
+
+    // (0) VBV/VSV 作动器动力学 (一阶滞后)
+    const alpha_vbv = 1 - Math.exp(-Ts / ENGINE.tau_VBV)
+    const alpha_vsv = 1 - Math.exp(-Ts / ENGINE.tau_VSV)
+    this.VBV_actual += alpha_vbv * (this.VBV_cmd - this.VBV_actual)
+    this.VSV_actual += alpha_vsv * (this.VSV_cmd - this.VSV_actual)
+
+    // VBV 效果: 放气导致 Ps3 等效降低 (放掉一部分压力)
+    const vbvPs3Factor = 1.0 - this.VBV_actual * ENGINE.vbv_ps3_drop_max
+
+    // VSV 效果: 调整静子叶片，改善喘振边界 (此处记录供检测用)
+    const vsvSurgeBoost = 1.0 + this.VSV_actual / 12.0 * ENGINE.vsv_surge_boost
 
     // (1) FMV 活门一阶滞后 (执行器动态)
     const alpha_fmv = 1 - Math.exp(-Ts / this.tau_FMV)
@@ -90,32 +132,50 @@ export class EngineDynamics {
     // (2) 计算稳态目标值
     const ss = this.steadyStatePoint(Wf_norm)
 
+    // VSV 间接效果: 改善压气机效率 → 同 Wf 下 N2 稍降，Ps3 稍降
+    const n2SsEff = ss.N2_ss * (1.0 - this.VSV_actual / 12.0 * 0.03)
+    const ps3SsEff = ss.Ps3_ss * vbvPs3Factor * (1.0 - this.VSV_actual / 12.0 * 0.05)
+
     // (3) N1 低压转子动力学 (一阶)
-    //     d(N1)/dt = (N1_ss - N1) / tau_N1
     const kn1 = (ss.N1_ss - this.N1) / ENGINE.tau_N1
 
     // (4) N2 高压转子动力学 (一阶)
-    //     高压转子响应更快，但受 N1 负载耦合
-    const loadCoupling = 0.12 * (this.N1 - ss.N1_ss) * 0
-    const kn2 = (ss.N2_ss - this.N2) / ENGINE.tau_N2 + loadCoupling
+    const kn2 = (n2SsEff - this.N2) / ENGINE.tau_N2
 
     // (5) EGT 排气温度 (二阶: 燃烧延迟 + 热惯性)
-    //     过冲模型: 目标超调 18% 然后回落
     const egtTarget = ss.EGT_ss + (ss.EGT_ss - this.EGT) * 0.15 * ENGINE.egt_overshoot_ratio
     const k_egt1 = (egtTarget   - this.egtStage1) / ENGINE.tau_egt_chamber
     const k_egt2 = (this.egtStage1 - this.egtStage2) / ENGINE.tau_egt_thermal
 
     // (6) Ps3 压气机出口压力 (一阶快动态)
-    const k_ps3 = (ss.Ps3_ss - this.Ps3) / 0.08
+    const k_ps3 = (ps3SsEff - this.Ps3) / 0.08
 
-    // ---- RK4 积分简化: 因方程为线性时变，用梯形法足够 ----
-    // N1 / N2 / EGT / Ps3
+    // ---- 积分 ----
     this.N1  += kn1  * Ts
     this.N2  += kn2  * Ts
     this.egtStage1 += k_egt1 * Ts
     this.egtStage2 += k_egt2 * Ts
     this.EGT  = this.egtStage2
     this.Ps3 += k_ps3 * Ts
+
+    // (7) 喘振先兆抖动 (物理仿真)
+    //     越接近喘振线，抖振幅度越大；抖动主频 ~12.5Hz
+    this._shakePhase += 2 * Math.PI * ENGINE.shake_freq * Ts
+    const shakeBase = Math.sin(this._shakePhase)
+    // 叠加少量次谐波与白噪声，更真实
+    const shake2 = Math.sin(this._shakePhase * 2.3 + 0.7) * 0.3
+    const noise = (Math.random() * 2 - 1) * 0.2
+    const shakeNormalized = shakeBase + shake2 + noise
+
+    // 抖动幅度正比于喘振接近程度的 2 次方 (非线性增强)
+    const proxClamped = Math.max(0, Math.min(1, surgeProximity))
+    const shakeAmp = proxClamped * proxClamped * ENGINE.shake_max_amp * this.Ps3
+
+    // 将抖振叠加到 Ps3 (传感器测得的压力包含气流扰动)
+    this.Ps3 += shakeNormalized * shakeAmp * 0.3
+
+    // 同时轻微叠加到 N2 (扭矩波动)
+    this.N2 += shakeNormalized * shakeAmp / this.Ps3 * 0.15
 
     // 物理硬约束 (最后防线)
     this.N1  = Math.max(0, Math.min(115, this.N1))
@@ -129,7 +189,10 @@ export class EngineDynamics {
       EGT: this.EGT,
       Ps3: this.Ps3,
       Wf_actual: this.Wf_actual,
-      Wf_cmd: Wf_cmd
+      Wf_cmd: Wf_cmd,
+      VBV_actual: this.VBV_actual,
+      VSV_actual: this.VSV_actual,
+      surgeShakeAmp: shakeAmp
     }
   }
 

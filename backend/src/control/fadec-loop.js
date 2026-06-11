@@ -10,6 +10,15 @@
 //        │                                               ▼
 //        └──────────────── 反馈回路 ◀────────────────────┘
 //
+// 主动稳定性控制 (喘振防护):
+//   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+//   │ Ps3/N2 微导  │───▶│ Surge Line   │───▶│ VBV/VSV 自动 │
+//   │ 数 + 带通滤波 │    │ 喘振裕度计算 │    │ 离散输出作动 │
+//   └──────────────┘    └──────────────┘    └──────┬───────┘
+//                                                  ▼
+//                                       放气 + 静子角度调整
+//                                       → 喘振裕度回升安全区
+//
 // 对外 WebSocket 接口:
 //   入站 (client -> server):  { type:'tla', value: 0~100 }
 //   出站 (server -> client):  100Hz 遥测帧 (N1, N2, EGT, Ps3, Wf, ...)
@@ -19,6 +28,7 @@ import { solveTLA } from './tla-solver.js'
 import { PIController } from './pi-controller.js'
 import { FuelFlowLimiter } from './fuel-limiter.js'
 import { EngineDynamics } from './engine-dynamics.js'
+import { SurgeDetector } from './surge-detector.js'
 
 export class FADECLoop {
   constructor() {
@@ -45,6 +55,9 @@ export class FADECLoop {
     })
 
     this.limiter = new FuelFlowLimiter()
+
+    // 喘振监测与主动稳定性控制
+    this.surgeDetector = new SurgeDetector(this.Ts)
 
     // 调度状态
     this.frameCount = 0
@@ -87,6 +100,7 @@ export class FADECLoop {
     const n1Measured = this.engine.N1
     const ps3 = this.engine.Ps3
     const t2  = this.engine.T2
+    const p2  = this.engine.P2
 
     // (4) PI + 超前-滞后控制律
     const satState = this.limiter.getSaturationState()
@@ -96,8 +110,25 @@ export class FADECLoop {
     const limitResult = this.limiter.limit(wfRaw, ps3, t2)
     const wfCmd = limitResult.wfCmd
 
-    // (6) 下发给发动机 (被控对象积分)
-    const eng = this.engine.step(wfCmd)
+    // (6) 喘振接近度 (上一拍的检测结果，用于本拍物理仿真)
+    //     0 = 完全安全, 1 = 已到喘振线
+    const surgeMarginPrev = this.surgeDetector.surgeMargin
+    const surgeProximity = Math.max(0, Math.min(1, 1 - surgeMarginPrev / 30))
+
+    // (7) 下发给发动机 (被控对象积分 + 抖振物理仿真)
+    const eng = this.engine.step(wfCmd, surgeProximity)
+
+    // (8) 喘振监测：用最新 N2/Ps3 计算当前喘振裕度
+    const surgeResult = this.surgeDetector.step(eng.N2, eng.Ps3, p2, t2)
+
+    // (9) 自动防护：喘振逼近时触发 VBV + VSV 离散输出
+    if (surgeResult.vbvActive) {
+      this.engine.setVBV(1.0)                       // VBV 全开放气
+      this.engine.setVSV(surgeResult.vsvAngle)      // VSV 角度随裕度调整
+    } else {
+      this.engine.setVBV(0.0)
+      this.engine.setVSV(0.0)
+    }
 
     // ---- 遥测打包 ----
     const t1 = process.hrtime.bigint()
@@ -121,6 +152,17 @@ export class FADECLoop {
       saturation: limitResult.saturation,
       workerReady: limitResult.workerReady,
       workerLatency_us: limitResult.workerLatency_us,
+      // 喘振防护遥测
+      surgeMargin: surgeResult.surgeMargin,
+      surgeStatus: surgeResult.status,
+      vbvActive: surgeResult.vbvActive,
+      vbvPosition: eng.VBV_actual,
+      vsvAngle: eng.VSV_actual,
+      shakeNorm: surgeResult.shakeNorm,
+      dPs3dt: surgeResult.dPs3dt,
+      dN2dt: surgeResult.dN2dt,
+      pr: surgeResult.pr,
+      prSurge: surgeResult.prSurge,
       loopTime_us: Number(t1 - t0) / 1e3,
       timestamp: Date.now() + this.frameCount / this.Fs * 1000
     }
