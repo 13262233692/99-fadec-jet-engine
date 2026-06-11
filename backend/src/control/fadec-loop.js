@@ -119,6 +119,8 @@ export class FADECLoop {
       wfMin: limitResult.wfMin,
       wfMax: limitResult.wfMax,
       saturation: limitResult.saturation,
+      workerReady: limitResult.workerReady,
+      workerLatency_us: limitResult.workerLatency_us,
       loopTime_us: Number(t1 - t0) / 1e3,
       timestamp: Date.now() + this.frameCount / this.Fs * 1000
     }
